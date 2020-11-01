@@ -1,0 +1,311 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Yubico Take Home Assignment to deploy a custom web application on an AWS EC2 Instance",
+    "Parameters": {
+        "VpcId": {
+            "Description": "VpcId where AWS Resources for the Web App are to be provisioned",
+            "Type": "AWS::EC2::VPC::Id"
+        },
+        "PublicSubnets": {
+            "Description": "Public Subnet(s) where EC2 Instance(s) need to be provisioned. Can choose one but for high availability, recommended to choose two subnets from different AZs",
+            "Type": "List<AWS::EC2::Subnet::Id>"
+        },
+        "InstanceType": {
+            "Description": "EC2 Instance Type to be used of the EC2. Defaults to t2.micro since we are using AWS Free Tier",
+            "Type": "String",
+            "Default": "t2.micro"
+        },
+        "PercentOfOnDemandInstances": {
+            "Default": "50",
+            "Description": "Percentage of On-Demand EC2 instances to launch after Base Capacity is reached. During any scaling activity, ensures percent of on-demand instances declared here is maintained",
+            "Type": "Number"
+        }
+    },
+    "Mappings": {
+        "AMIRegionMap": {
+            "us-east-1": {
+                "HVM64": "ami-046842448f9e74e7d"
+            },
+            "us-west-1": {
+                "HVM64": "ami-0926eb6fbfa35a8aa"
+            },
+            "us-east-2": {
+                "HVM64": "ami-0e82959d4ed12de3f"
+            },
+            "us-west-2": {
+                "HVM64": "ami-0d1cd67c26f5fca19"
+            },
+            "eu-north-1": {
+                "HVM64": "ami-0b7937aeb16a7eb94"
+            },
+            "eu-west-1": {
+                "HVM64": "ami-01cca82393e531118"
+            },
+            "eu-west-2": {
+                "HVM64": "ami-04cc79dd5df3bffca"
+            },
+            "eu-west-3": {
+                "HVM64": "ami-0199da835c7a2ec3c"
+            },
+            "eu-central-1": {
+                "HVM64": "ami-0ca54ebdb2e62512e"
+            }
+        }
+    },
+    "Resources": {
+        "YubicoEC2InstanceSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupName": "Yubico_DevOps_EC2_Instance_SG",
+                "GroupDescription": "EC2 Instance Security Group allowing access to users on the Internet on port 80 for accessing the web application",
+                "VpcId": {
+                    "Ref": "VpcId"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "Description": "Allow traffic over SSH default port to users on the Internet",
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": "80",
+                        "IpProtocol": "tcp",
+                        "ToPort": "80"
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Yubico_DevOps_EC2_Instance_SG"
+                    },
+                    {
+                        "Key": "Platform",
+                        "Value": "Yubico"
+                    },
+                    {
+                        "Key": "Project",
+                        "Value": "Yubico_Take_Home_Assignment"
+                    }
+                ]
+            }
+        },
+        "YubicoLaunchTemplate": {
+            "Type": "AWS::EC2::LaunchTemplate",
+            "DependsOn": [
+                "YubicoEC2InstanceSecurityGroup"
+            ],
+            "Properties": {
+                "LaunchTemplateData": {
+                    "ImageId": {
+                        "Fn::FindInMap": [
+                            "AMIRegionMap",
+                            {
+                                "Ref": "AWS::Region"
+                            },
+                            "HVM64"
+                        ]
+                    },
+                    "NetworkInterfaces": [
+                        {
+                            "AssociatePublicIpAddress": "true",
+                            "DeleteOnTermination": true,
+                            "Description": "Public IP associated to Yubico DevOps EC2",
+                            "DeviceIndex": "0",
+                            "Groups": [
+                                {
+                                    "Fn::GetAtt": [
+                                        "YubicoEC2InstanceSecurityGroup",
+                                        "GroupId"
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "TagSpecifications": [
+                        {
+                            "ResourceType": "instance",
+                            "Tags": [
+                                {
+                                    "Key": "Name",
+                                    "Value": "Yubico_DevOps_EC2_LT"
+                                },
+                                {
+                                    "Key": "Project",
+                                    "Value": "Yubico_Take_Home_Assignment"
+                                },
+                                {
+                                    "Key": "Platform",
+                                    "Value": "Yubico"
+                                }
+                            ]
+                        }
+                    ],
+                    "UserData": {
+                        "Fn::Base64": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    "#!/bin/bash -x\n",
+                                    "sudo apt-get update -y\n",
+                                    "#Install Docker via the convenience script\n",
+                                    "sudo curl -fsSL https://get.docker.com -o get-docker.sh\n",
+                                    "sudo sh get-docker.sh\n",
+                                    "# Run the web application container on the EC2 instance using Docker\n",
+                                    "sudo docker container run -d -p 80:80 --name yubico_web_app dockerlearnla/yubico_devops_web_app:latest\n",
+                                    "sudo curl http://localhost/\n"
+                                ]
+                            ]
+                        }
+                    }
+                },
+                "LaunchTemplateName": "Yubico_DevOps_EC2_LT"
+            }
+        },
+        "YubicoServerAutoScalingGroup": {
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "DependsOn": [
+                "YubicoLaunchTemplate"
+            ],
+            "Properties": {
+                "AutoScalingGroupName": "Yubico_DevOps_EC2_ASG",
+                "HealthCheckType": "EC2",
+                "DesiredCapacity": 1,
+                "MixedInstancesPolicy": {
+                    "InstancesDistribution": {
+                        "OnDemandAllocationStrategy": "prioritized",
+                        "OnDemandBaseCapacity": 1,
+                        "OnDemandPercentageAboveBaseCapacity": {
+                            "Ref": "PercentOfOnDemandInstances"
+                        },
+                        "SpotAllocationStrategy": "lowest-price",
+                        "SpotInstancePools": 3
+                    },
+                    "LaunchTemplate": {
+                        "LaunchTemplateSpecification": {
+                            "LaunchTemplateId": {
+                                "Ref": "YubicoLaunchTemplate"
+                            },
+                            "Version": {
+                                "Fn::GetAtt": [
+                                    "YubicoLaunchTemplate",
+                                    "LatestVersionNumber"
+                                ]
+                            }
+                        },
+                        "Overrides": [
+                            {
+                                "InstanceType": {
+                                    "Ref": "InstanceType"
+                                }
+                            }
+                        ]
+                    }
+                },
+                "MaxSize": 4,
+                "MinSize": 1,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "PropagateAtLaunch": "true",
+                        "Value": "Yubico_DevOps_EC2_ASG"
+                    },
+                    {
+                        "Key": "Platform",
+                        "PropagateAtLaunch": "true",
+                        "Value": "Yubico"
+                    },
+                    {
+                        "Key": "Project",
+                        "PropagateAtLaunch": "true",
+                        "Value": "Yubico_Take_Home_Assignment"
+                    }
+                ],
+                "VPCZoneIdentifier": {
+                    "Ref": "PublicSubnets"
+                }
+            }
+        },
+        "YubicoEC2InstanceCPUAlarmHigh": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "YubicoASGScaleUpPolicy"
+                    }
+                ],
+                "AlarmDescription": "High CPU Detected on Yubico EC2 Instance. Adding an EC2 Instance",
+                "ComparisonOperator": "GreaterThanThreshold",
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": {
+                            "Ref": "YubicoServerAutoScalingGroup"
+                        }
+                    }
+                ],
+                "EvaluationPeriods": "2",
+                "MetricName": "CPUUtilization",
+                "Namespace": "AWS/EC2",
+                "Period": "60",
+                "Statistic": "Average",
+                "Threshold": "80"
+            },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+        "YubicoEC2InstanceCPUAlarmLow": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "YubicoASGScaleDownPolicy"
+                    }
+                ],
+                "AlarmDescription": "Low CPU observed on Yubico EC2 Instance. Terminating an EC2 Instance",
+                "ComparisonOperator": "LessThanThreshold",
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": {
+                            "Ref": "YubicoServerAutoScalingGroup"
+                        }
+                    }
+                ],
+                "EvaluationPeriods": "5",
+                "MetricName": "CPUUtilization",
+                "Namespace": "AWS/EC2",
+                "Period": "180",
+                "Statistic": "Average",
+                "Threshold": "10"
+            },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+        "YubicoASGScaleDownPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "YubicoServerAutoScalingGroup"
+                },
+                "Cooldown": "60",
+                "ScalingAdjustment": "-1"
+            },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        },
+        "YubicoASGScaleUpPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "YubicoServerAutoScalingGroup"
+                },
+                "Cooldown": "120",
+                "ScalingAdjustment": "1"
+            },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        }
+    },
+    "Outputs": {
+        "YubicoEC2InstanceSGID": {
+            "Description": "Yubico EC2 Instance Security Group ID",
+            "Value": {
+                "Fn::GetAtt": [
+                    "YubicoEC2InstanceSecurityGroup",
+                    "GroupId"
+                ]
+            }
+        }
+    }
+}
